@@ -70,7 +70,7 @@ ESP32Encoder encoder;
 enum AppMode {
   MODE_MENU,
   MODE_DMX_TO_IR,
-  MODE_IR_TO_DMX,
+  MODE_IR_TO_DM,
   MODE_IR_LEARN
 };
 volatile AppMode activeMode = MODE_MENU;
@@ -98,7 +98,7 @@ unsigned long modeEnteredTime = 0; // Čas vstupu do režimu IR to DM
 long menuBaseline = 0;
 
 void updateMenuBaseline() {
-  //menuBaseline = encoder.getCount();
+  menuBaseline = encoder.getCount();
 }
 
 int getRelativeIndex(int numItems) {
@@ -249,7 +249,7 @@ void runIrToDmx() {
   display.println("IR to DM");
   display.setTextSize(1);
   display.setCursor(0, 30);
-  display.println("Waiting for IR");
+  display.println("Čekám na IR");
   display.display();
   
   if (irrecv.decode(&results)) {
@@ -336,6 +336,9 @@ void runIrLearn() {
 }
 
 void checkReturnToMenu() {
+  if (activeMode == MODE_IR_TO_DM && (millis() - modeEnteredTime < 1000)) {
+    return;
+  }
   if (digitalRead(ENCODER_BTN_PIN) == LOW) {
     Serial.println("Návrat do menu");
     updateMenuBaseline();
@@ -346,10 +349,6 @@ void checkReturnToMenu() {
     drawMenu();
     initDMXReceiver();
     lastButtonTime = millis();
-    encoder.resumeCount();
-    while (digitalRead(ENCODER_BTN_PIN) == LOW) {
-      delay(10);
-    }
   }
 }
 
@@ -404,130 +403,130 @@ void setup() {
   irsend.begin();
 }
 
-void handleMenuMode(){
-  int newIndex;
-  if (menuLevel == 0) {
-    newIndex = getRelativeIndex(4);
-    if (newIndex != menuIndexMain) {
-      menuIndexMain = newIndex;
-      drawMenu();
-      Serial.print("Main menu index: ");
-      Serial.println(menuIndexMain);
-    }
-  }
-  else if (menuLevel == 1) {
-    newIndex = getRelativeIndex(2);
-    if (newIndex != menuIndexSettings) {
-      menuIndexSettings = newIndex;
-      drawMenu();
-      Serial.print("Settings menu index: ");
-      Serial.println(menuIndexSettings);
-    }
-  }
-  else if (menuLevel == 2) {
-    newIndex = getRelativeIndex(7);
-    if (newIndex != menuIndexIRLearn) {
-      menuIndexIRLearn = newIndex;
-      drawMenu();
-      Serial.print("IR Learn menu index: ");
-      Serial.println(menuIndexIRLearn);
-    }
-  }
-}
-
-void handleChoice() {
-  if (menuLevel == 0) {
-    if (menuIndexMain == 0) {
-      activeMode = MODE_DMX_TO_IR;
-      menuMode = false;
-      Serial.println("Vybráno: DMX to IR");
-      updateMenuBaseline();
-      initDMXReceiver();
-      digitalWrite(MAX485_CTRL_PIN, LOW);
-    } else if (menuIndexMain == 1) {
-      activeMode = MODE_IR_TO_DMX;
-      menuMode = false;
-      Serial.println("Vybráno: IR to DM");
-      updateMenuBaseline();
-      initDMXTransmitter();
-      digitalWrite(MAX485_CTRL_PIN, HIGH);
-      modeEnteredTime = millis();
-    } else if (menuIndexMain == 2) {
-      activeMode = MODE_IR_LEARN;
-      menuLevel = 2;
-      updateMenuBaseline();
-      drawMenu();
-      Serial.println("Vybráno: IR Learn");
-    } else if (menuIndexMain == 3) {
-      menuLevel = 1;
-      updateMenuBaseline();
-      drawMenu();
-      Serial.println("Vybráno: Settings");
-    }
-  }
-  else if (menuLevel == 1) {
-    if (menuIndexSettings == 0) {
-      wifiAPEnabled = !wifiAPEnabled;
-      if (wifiAPEnabled) {
-        WiFi.softAP(ssid, password);
-        Serial.println("WiFi AP zapnut");
-      } else {
-        WiFi.softAPdisconnect(true);
-        Serial.println("WiFi AP vypnut");
-      }
-      drawMenu();
-    } else if (menuIndexSettings == 1) {
-      menuLevel = 0;
-      updateMenuBaseline();
-      drawMenu();
-      Serial.println("Návrat z Settings");
-    }
-  }
-  else if (menuLevel == 2) {
-    if (menuIndexIRLearn < 6) {
-      menuLevel = 3;
-      menuMode = false;
-      irLearnStartTime = millis();
-      updateMenuBaseline();
-      drawMenu();
-      Serial.print("Nastavuji IR Learn pro pozici ");
-      Serial.println(menuIndexIRLearn + 1);
-    } else {
-      menuLevel = 0;
-      updateMenuBaseline();
-      drawMenu();
-      Serial.println("Návrat z IR Learn");
-    }
-  }
-  // wait until the button is released
-  // and perform the action within the same frame
-  // (loop iteration)
-  while (digitalRead(ENCODER_BTN_PIN) == LOW) {
-    delay(10);
-  }
-}
-
 void loop() {
-  Serial.println(encoder.getCount());
   if (menuMode) {
-    handleMenuMode();
+    int newIndex;
+    if (menuLevel == 0) {
+      newIndex = getRelativeIndex(4);
+      if (newIndex != menuIndexMain) {
+        menuIndexMain = newIndex;
+        drawMenu();
+        Serial.print("Main menu index: ");
+        Serial.println(menuIndexMain);
+      }
+    }
+    else if (menuLevel == 1) {
+      newIndex = getRelativeIndex(2);
+      if (newIndex != menuIndexSettings) {
+        menuIndexSettings = newIndex;
+        drawMenu();
+        Serial.print("Settings menu index: ");
+        Serial.println(menuIndexSettings);
+      }
+    }
+    else if (menuLevel == 2) {
+      newIndex = getRelativeIndex(7);
+      if (newIndex != menuIndexIRLearn) {
+        menuIndexIRLearn = newIndex;
+        drawMenu();
+        Serial.print("IR Learn menu index: ");
+        Serial.println(menuIndexIRLearn);
+      }
+    }
     
-    if (digitalRead(ENCODER_BTN_PIN) == LOW && ((millis() - lastButtonTime) > debounceDelay)) {
+    if (digitalRead(ENCODER_BTN_PIN) == LOW && (millis() - lastButtonTime > debounceDelay)) {
       lastButtonTime = millis();
       Serial.println("Tlačítko stisknuto v menu!");
-      handleChoice();
+      if (menuLevel == 0) {
+        if (menuIndexMain == 0) {
+          activeMode = MODE_DMX_TO_IR;
+          menuMode = false;
+          Serial.println("Vybráno: DMX to IR");
+          updateMenuBaseline();
+          initDMXReceiver();
+          digitalWrite(MAX485_CTRL_PIN, LOW);
+        } else if (menuIndexMain == 1) {
+          activeMode = MODE_IR_TO_DM;
+          menuMode = false;
+          Serial.println("Vybráno: IR to DM");
+          updateMenuBaseline();
+          initDMXTransmitter();
+          digitalWrite(MAX485_CTRL_PIN, HIGH);
+          modeEnteredTime = millis();
+          // Počkejme, dokud tlačítko nebude uvolněno
+          while (digitalRead(ENCODER_BTN_PIN) == LOW) {
+            delay(10);
+          }
+          display.clearDisplay();
+          display.setTextSize(2);
+          display.setCursor(0, 0);
+          display.println("IR to DM");
+          display.setTextSize(1);
+          display.setCursor(0, 30);
+          display.println("Čekám na IR");
+          display.display();
+        } else if (menuIndexMain == 2) {
+          activeMode = MODE_IR_LEARN;
+          menuLevel = 2;
+          updateMenuBaseline();
+          drawMenu();
+          Serial.println("Vybráno: IR Learn");
+        } else if (menuIndexMain == 3) {
+          menuLevel = 1;
+          updateMenuBaseline();
+          drawMenu();
+          Serial.println("Vybráno: Settings");
+        }
+      }
+      else if (menuLevel == 1) {
+        if (menuIndexSettings == 0) {
+          wifiAPEnabled = !wifiAPEnabled;
+          if (wifiAPEnabled) {
+            WiFi.softAP(ssid, password);
+            Serial.println("WiFi AP zapnut");
+          } else {
+            WiFi.softAPdisconnect(true);
+            Serial.println("WiFi AP vypnut");
+          }
+          drawMenu();
+        } else if (menuIndexSettings == 1) {
+          menuLevel = 0;
+          updateMenuBaseline();
+          drawMenu();
+          Serial.println("Návrat z Settings");
+        }
+      }
+      else if (menuLevel == 2) {
+        if (menuIndexIRLearn < 6) {
+          menuLevel = 3;
+          menuMode = false;
+          irLearnStartTime = millis();
+          updateMenuBaseline();
+          drawMenu();
+          Serial.print("Nastavuji IR Learn pro pozici ");
+          Serial.println(menuIndexIRLearn + 1);
+        } else {
+          menuLevel = 0;
+          updateMenuBaseline();
+          drawMenu();
+          Serial.println("Návrat z IR Learn");
+        }
+      }
+      delay(50);
     }
   }
   else {
-    if (activeMode == MODE_IR_TO_DMX) {
+    if (activeMode == MODE_IR_TO_DM) {
       runIrToDmx();
+      checkReturnToMenu();
     } else if (activeMode == MODE_DMX_TO_IR) {
-      //DMXtoIR();
+      DMXtoIR();
+      checkReturnToMenu();
     } else if (activeMode == MODE_IR_LEARN) {
       if (menuLevel == 3) {
-        //runIrLearn();
+        runIrLearn();
       }
+      checkReturnToMenu();
     }
-    checkReturnToMenu();
   }
 }
