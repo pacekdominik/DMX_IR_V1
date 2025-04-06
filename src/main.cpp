@@ -155,19 +155,23 @@ void resetEncoder() {
 // Inicializace DMX přijímače a vysílače
 //
 void initDMXReceiver() {
+  encoder.detach();
   dmx_driver_uninstall(dmxPort);
   dmx_config_t config = DMX_CONFIG_DEFAULT;
   dmx_driver_install(dmxPort, &config, DMX_INTR_FLAGS_DEFAULT);
   dmx_set_pin(dmxPort, 19, 18, ENABLE_PIN); // RX na GPIO18, TX na GPIO19
   Serial.println("DMX driver inicializován pro příjem (receiver)");
+  encoder.attachHalfQuad(ENCODER_PIN_A, ENCODER_PIN_B);
 }
 
 void initDMXTransmitter() {
+  encoder.detach();
   dmx_driver_uninstall(dmxPort);
   dmx_config_t config = DMX_CONFIG_DEFAULT;
   dmx_driver_install(dmxPort, &config, DMX_INTR_FLAGS_DEFAULT);
   dmx_set_pin(dmxPort, 19, 18, ENABLE_PIN); 
   Serial.println("DMX driver inicializován pro vysílání (transmitter)");
+  encoder.attachHalfQuad(ENCODER_PIN_A, ENCODER_PIN_B);
 }
 
 //
