@@ -155,19 +155,23 @@ void resetEncoder() {
 // Inicializace DMX přijímače a vysílače
 //
 void initDMXReceiver() {
+  encoder.detach();
   dmx_driver_uninstall(dmxPort);
   dmx_config_t config = DMX_CONFIG_DEFAULT;
   dmx_driver_install(dmxPort, &config, DMX_INTR_FLAGS_DEFAULT);
   dmx_set_pin(dmxPort, 19, 18, ENABLE_PIN); // RX na GPIO18, TX na GPIO19
   Serial.println("DMX driver inicializován pro příjem (receiver)");
+  encoder.attachHalfQuad(ENCODER_PIN_A, ENCODER_PIN_B);
 }
 
 void initDMXTransmitter() {
+  encoder.detach();
   dmx_driver_uninstall(dmxPort);
   dmx_config_t config = DMX_CONFIG_DEFAULT;
   dmx_driver_install(dmxPort, &config, DMX_INTR_FLAGS_DEFAULT);
   dmx_set_pin(dmxPort, 19, 18, ENABLE_PIN); 
   Serial.println("DMX driver inicializován pro vysílání (transmitter)");
+  encoder.attachHalfQuad(ENCODER_PIN_A, ENCODER_PIN_B);
 }
 
 //
@@ -444,13 +448,21 @@ uint32_t getIRCodeFromLibrary(String manufacturer, String devType, String comman
 void handleWiFiServer() {
   WiFiClient client = server.available();
   if (client) {
-    while (!client.available()) {
+    unsigned long reqStartTime = millis();
+    // Čekáme maximálně 2000 ms (2 sekundy) na příchozí data
+    while (!client.available() && (millis() - reqStartTime < 2000)) {
       delay(1);
     }
+    if (!client.available()) {  // Pokud data nepřijdou ani po timeoutu, ukončíme spojení
+      client.stop();
+      return;
+    }
+    
     String request = client.readStringUntil('\r');
     Serial.print("HTTP Request: ");
     Serial.println(request);
-
+    
+    // Zpracování parametrů pro každý DMX kanál
     for (int i = 1; i <= 6; i++) {
       String paramMethod = "channel" + String(i) + "_method=";
       int mIndex = request.indexOf(paramMethod);
@@ -469,7 +481,7 @@ void handleWiFiServer() {
             int e2 = request.indexOf('&', s2);
             if (e2 == -1) { e2 = request.indexOf(' ', s2); }
             String codeStr = request.substring(s2, e2);
-            if(codeStr.length() > 8) {
+            if (codeStr.length() > 8) {
               codeStr = codeStr.substring(0, 8);
             }
             newCode = (uint32_t) strtoul(codeStr.c_str(), NULL, 16);
@@ -482,24 +494,24 @@ void handleWiFiServer() {
           int idxManu = request.indexOf(paramManu);
           int idxDev  = request.indexOf(paramDev);
           int idxCmd  = request.indexOf(paramCmd);
-          if(idxManu != -1 && idxDev != -1 && idxCmd != -1) {
+          if (idxManu != -1 && idxDev != -1 && idxCmd != -1) {
             int sManu = idxManu + paramManu.length();
             int eManu = request.indexOf('&', sManu);
-            if(eManu == -1) { eManu = request.indexOf(' ', sManu); }
+            if (eManu == -1) { eManu = request.indexOf(' ', sManu); }
             String manufacturer = urldecode(request.substring(sManu, eManu));
             
             int sDev = idxDev + paramDev.length();
             int eDev = request.indexOf('&', sDev);
-            if(eDev == -1) { eDev = request.indexOf(' ', sDev); }
+            if (eDev == -1) { eDev = request.indexOf(' ', sDev); }
             String devType = urldecode(request.substring(sDev, eDev));
             
             int sCmd = idxCmd + paramCmd.length();
             int eCmd = request.indexOf('&', sCmd);
-            if(eCmd == -1) { eCmd = request.indexOf(' ', sCmd); }
+            if (eCmd == -1) { eCmd = request.indexOf(' ', sCmd); }
             String command = urldecode(request.substring(sCmd, eCmd));
             
             newCode = getIRCodeFromLibrary(manufacturer, devType, command);
-            if(newCode == 0) {
+            if (newCode == 0) {
               Serial.print("Neplatný výběr z knihovny pro kanál ");
               Serial.println(i);
             }
@@ -531,7 +543,8 @@ void handleWiFiServer() {
         }
       }
     }
-
+    
+    // Sestavíme HTML stránku s formulářem
     String html = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n";
     html += "<html><head><meta charset='UTF-8'><title>IR Code Config</title>";
     html += "<script>";
@@ -626,6 +639,7 @@ void handleWiFiServer() {
     Serial.println("Client disconnected.");
   }
 }
+
 
 //
 // setup() – inicializace modulů, načtení uložených IR kódů, spuštění WiFi AP a serveru
