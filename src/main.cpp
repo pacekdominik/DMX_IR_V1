@@ -705,6 +705,10 @@ void handleWiFiServer() {
     html += "<option value='Samsung'>Samsung</option>";
     html += "<option value='LG'>LG</option>";
     html += "<option value='Sony'>Sony</option>";
+    html += "<option value='Panasonic'>Panasonic</option>";
+    html += "<option value='Philips'>Philips</option>";
+    html += "<option value='Yamaha'>Yamaha</option>";
+    html += "<option value='Generic'>Air Conditioner</option>";
     html += "</select><br>";
     html += "Device Type: <select name='code" + String(i) + "_library_devicetype' id='code_library_" + String(i) + "_devicetype' onchange='updateCommand(" + String(i) + ")'>";
     html += "<option value='TV'>TV</option>";
