@@ -84,11 +84,6 @@ int menuIndexSettings = 0;  // Settings: 0: WiFi AP, 1: Exit
 int menuIndexIRLearn = 0;   // IR Learn submenu: položky 0 až 5 (odpovídají pozicím 1 až 6), 6 = Exit
 bool wifiAPEnabled = false;
 
-// Definice IR kódů využívaných v režimu IR to DMX (ilustrativně)
-#define IR_SELECT 0xFFA25D
-#define IR_UP     0xFF629D
-#define IR_DOWN   0xFFE21D
-
 // Pole pro uložené IR kódy pro DMX kanály (index 1 až 6)
 // Používá se pro manuální zadání a metodu "learned" – u metody "library" se kód dopočítá
 uint32_t learnedIRCodes[8] = {0, 0, 0, 0, 0, 0, 0, 0};
@@ -145,7 +140,7 @@ void updateMenuBaseline() {
 
 int getRelativeIndex(int numItems) {
   long rel = encoder.getCount() - menuBaseline;
-  int idx = (rel / 2) % numItems;  // každý "detent" změní hodnotu o 2
+  int idx = (rel) % numItems;  // každý "detent" změní hodnotu
   if (idx < 0) idx += numItems;
   return idx;
 }
