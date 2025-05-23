@@ -99,6 +99,9 @@ unsigned long lastButtonTime = 0;
 const unsigned long debounceDelay = 200; // 200 ms debounce
 unsigned long modeEnteredTime = 0; // Čas vstupu do režimu IR to DMX
 
+
+static bool dmxInstalled = false;
+
 // pro IR→DMX režim
 bool  irToDmxFirstEntry = true;
 int   irToDmxLastScene  = -1;
@@ -158,11 +161,15 @@ void resetEncoder() {
 //
 void initDMXTransciever() {
   encoder.detach();
-  dmx_driver_uninstall(dmxPort);
-  dmx_config_t config = DMX_CONFIG_DEFAULT;
-  dmx_driver_install(dmxPort, &config, DMX_INTR_FLAGS_DEFAULT);
-  dmx_set_pin(dmxPort, 19, 18, ENABLE_PIN); // RX na GPIO18, TX na GPIO19
-  Serial.println("DMX driver inicializován");
+  if (!dmxInstalled) {
+    // jednorázová instalace
+    dmx_driver_uninstall(dmxPort);
+    dmx_config_t config = DMX_CONFIG_DEFAULT;
+    dmx_driver_install(dmxPort, &config, DMX_INTR_FLAGS_DEFAULT);
+    dmx_set_pin(dmxPort, 19, 18, ENABLE_PIN);
+    Serial.println("DMX driver inicializován");
+    dmxInstalled = true;
+  }
   encoder.attachHalfQuad(ENCODER_PIN_A, ENCODER_PIN_B);
 }
 
@@ -282,16 +289,17 @@ void DMXtoIR() {
 
 void runIrToDmx() {
   // 1) Při každém vstupu (firstEntry=true) vykreslí hlavičku + waiting
-  if (irToDmxFirstEntry) {
+   if (irToDmxFirstEntry) {
+    // PROBUĎ IRrecv, aby poslouchal hned od začátku:
+    irrecv.resume();
+
     display.clearDisplay();
     display.setTextSize(2);
     display.setCursor(0, 0);
     display.println("IR to DMX");
     display.setTextSize(1);
     display.setCursor(0, 24);
-    display.println("Waiting for IR");
-    display.setCursor(0, 40);
-    display.print("Scene: -");
+    display.print("Waiting for IR");
     display.display();
 
     irToDmxFirstEntry = false;
@@ -434,7 +442,7 @@ void checkReturnToMenu() {
     drawMenu();
     initDMXTransciever();
     lastButtonTime = millis();
-    irrecv.enableIRIn();
+    
   }
 }
 
@@ -962,12 +970,12 @@ void loop() {
           menuMode   = false;
           Serial.println("Vybráno: IR to DMX");
           updateMenuBaseline();
-          initDMXTransciever();
           digitalWrite(MAX485_CTRL_PIN, HIGH);
-
-  // tady jen reset stavu, žádné display.clearDisplay() s "Čekám na IR"
-  irToDmxFirstEntry = true;
-  irToDmxLastScene  = -1;
+          
+          
+          // reset stavů
+          irToDmxFirstEntry = true;
+          irToDmxLastScene  = -1;
 } else if (menuIndexMain == 2) {
           // Při výběru IR Learn z hlavního menu přejdeme do submenu a resetujeme index
           menuLevel = 2;
