@@ -1,15 +1,10 @@
 #include <Arduino.h>
 #include <Wire.h>
-#include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SH1106.h>
 #include <esp_dmx.h>
-#include <assert.h>
 #include <IRrecv.h>
 #include <IRremoteESP8266.h>
-#include <IRac.h>
-#include <IRtext.h>
-#include <IRutils.h>
 #include <WiFi.h>
 #include <ESP32Encoder.h>
 #include <IRsend.h>
@@ -32,7 +27,6 @@ const char* ssid     = "DMX IR converter";
 const char* password = "999999999";
 // Vytvoření WiFi serveru na portu 80
 WiFiServer server(80);
-String header;
 
 // ========================
 // Displej – Adafruit_SH1106
@@ -97,8 +91,13 @@ int irLearnPos = 0;
 unsigned long irLearnStartTime = 0;
 unsigned long lastButtonTime = 0;
 const unsigned long debounceDelay = 200; // 200 ms debounce
-unsigned long modeEnteredTime = 0; // Čas vstupu do režimu IR to DMX
 
+// pro nový DMX→IR režim
+static bool  dmxToIrFirstEntry = true;
+static uint8_t dmxPrev[7] = {0};         // 1..6, drží předchozí hodnotu (<255 nebo ==255)
+static unsigned long lastDmxPoll = 0;    // čas posledního snímku
+
+static uint32_t lastIrSent[7] = {0};     //pamatujee si poslední odeslaný IR kód pro každý kanál
 
 static bool dmxInstalled = false;
 
@@ -248,44 +247,61 @@ void drawMenu() {
 
 // Režimy DMX to IR a IR to DMX 
 
-void DMXtoIR() {
-  initDMXTransciever();
+void runDmxToIr() {
+  if (dmxToIrFirstEntry) {
+    initDMXTransciever();
+    lastDmxPoll       = 0;
+    memset(dmxPrev,   0, sizeof(dmxPrev));
+    memset(lastIrSent,0, sizeof(lastIrSent));
+    dmxToIrFirstEntry = false;
+  }
+
+  unsigned long now = millis();
+  if (now - lastDmxPoll < 100) return;   // 10× za sekundu
+  lastDmxPoll = now;
+
+  // 1) Přečti DMX kanály
   dmx_read(dmxPort, data, DMX_PACKET_SIZE);
-  
+
+  // 2) Vykresli název módu + stavy + kódy
   display.clearDisplay();
   display.setTextSize(1);
+  display.setTextColor(WHITE);
   display.setCursor(0, 0);
-  display.println("DMX to IR mode:");
-  Serial.print("DMX values: ");
-  for (int channel = 1; channel <= 6; channel++) {
-    display.print("CH");
-    display.print(channel);
-    display.print(": ");
-    display.println(data[channel]);
-    Serial.print("CH");
-    Serial.print(channel);
-    Serial.print(": ");
-    Serial.print(data[channel]);
-    Serial.print("  ");
+  display.println("Mode: DMX->IR");
+  for (int ch = 1; ch <= 6; ch++) {
+    int y = ch * 8;
+    display.setCursor(0, y);
+    char buf[32];
+    sprintf(buf, "CH%d:%3u", ch, data[ch]);
+    if (lastIrSent[ch]) {
+      strcat(buf, "  ");
+      sprintf(buf + strlen(buf), "%08X", lastIrSent[ch]);
+    }
+    display.println(buf);
   }
-  Serial.println();
   display.display();
-  
-  for (int channel = 1; channel <= 6; channel++) {
-    if (data[channel] == 255) {
-      uint32_t code = learnedIRCodes[channel];
-      if (code != 0) {
+
+  // 3) EDGE-detekce, odeslání IR a mazání kódu, když klesne pod 255
+  for (int ch = 1; ch <= 6; ch++) {
+    bool highNow = (data[ch] == 255);
+    if (highNow && !dmxPrev[ch]) {
+      // právě přechod z <255 na 255 → pošli IR
+      uint32_t code = learnedIRCodes[ch];
+      if (code) {
         irsend.sendNEC(code, 32);
-        Serial.print("Vyslán IR kód pro DMX channel ");
-        Serial.print(channel);
-        Serial.print(": 0x");
-        Serial.println(code, HEX);
-        delay(100);
+        lastIrSent[ch] = code;
       }
     }
+    else if (!highNow) {
+      // jakmile poklesne pod 255, smažeme zobrazený kód
+      lastIrSent[ch] = 0;
+    }
+    dmxPrev[ch] = highNow;
   }
-  delay(1000);
 }
+
+
 
 void runIrToDmx() {
   // 1) Při každém vstupu (firstEntry=true) vykreslí hlavičku + waiting
@@ -427,7 +443,7 @@ void runIrLearn() {
 // Funkce pro návrat do menu – reset enkodéru a IR Learn index
 //
 void checkReturnToMenu() {
-  if (activeMode == MODE_IR_TO_DMX && (millis() - modeEnteredTime < 1000)) {
+  if (activeMode == MODE_IR_TO_DMX && (millis() < 1000)) {
     return;
   }
   if (digitalRead(ENCODER_BTN_PIN) == LOW && (millis() - lastButtonTime > debounceDelay)) {
@@ -1036,7 +1052,7 @@ void loop() {
       runIrToDmx();
       checkReturnToMenu();
     } else if (activeMode == MODE_DMX_TO_IR) {
-      DMXtoIR();
+      runDmxToIr();
       checkReturnToMenu();
     } else if (activeMode == MODE_IR_LEARN) {
       if (menuLevel == 3) {
