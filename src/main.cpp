@@ -234,9 +234,9 @@ void drawMenu() {
   display.display();
 }
 
-//
-// Režimy DMX to IR a IR to DMX (nezměněno)
-//
+
+// Režimy DMX to IR a IR to DMX 
+
 void DMXtoIR() {
   initDMXTransciever();
   dmx_read(dmxPort, data, DMX_PACKET_SIZE);
@@ -303,7 +303,6 @@ void runIrToDmx() {
         for (int ch = 1; ch <= 64; ch++) {
           data[ch] = scenes[i - 1][ch - 1];
         }
-        // Zbytek kanálů může zůstat z předchozího stavu nebo jako 0
 
         // Odešleme DMX paket (posíláme 65 bajtů: start code + 64 kanálů)
         dmx_write(dmxPort, data, 65);
@@ -313,7 +312,7 @@ void runIrToDmx() {
         return;  // skončíme po nalezení a odeslání jedné scény
       }
     }
-    // Pokud kód není v learnedIRCodes, můžeme ignorovat nebo doplnit fallback
+    // Pokud kód není v learnedIRCodes
     Serial.println("Přijat IR kód nerozpoznán v learnedIRCodes");
   }
 }
@@ -359,7 +358,6 @@ void runIrLearn() {
       case SONY:  protocol = "SONY";  break;
       case RC5:   protocol = "RC5";   break;
       case RC6:   protocol = "RC6";   break;
-      // Přidejte další případy, pokud používáte další protokoly
       default:    protocol = "OTHER"; break;
     }
     Serial.print("Obdržený kód odpovídá protokolu: ");
@@ -520,12 +518,12 @@ void handleWiFiServer() {
     return;
   }
 
-  // --- Read request line ------------------------------------
+  // Cteni radku request
   String request = client.readStringUntil('\r');
   Serial.print("HTTP Request: ");
   Serial.println(request);
 
-  // --- Parse path and query --------------------------------
+  // Parsovani cesty a dotazu (query)
   int firstSpace = request.indexOf(' ');
   int secondSpace = request.indexOf(' ', firstSpace + 1);
   String fullPath = request.substring(firstSpace + 1, secondSpace);
@@ -537,9 +535,9 @@ void handleWiFiServer() {
     query = fullPath.substring(qm + 1);
   }
 
-  // --- If "/scenes", show or save DMX scenes ----------------
+  // Pokud je "/scenes", zobraz nebo uloz DMX sceny
   if (path == "/scenes") {
-    // If query present, parse and save scenes[]
+    // Pokud je pritomen dotaz (query), rozparsuj ho a uloz do pole scenes []
     if (query.length()) {
       int idx = 0;
       while (idx < query.length()) {
@@ -561,7 +559,7 @@ void handleWiFiServer() {
         }
         idx = amp + 1;
       }
-      // Save each scene to NVS
+      // Ukladani kazde sceny do NVS
       for (int s = 0; s < 6; s++) {
         char key[12];
         sprintf(key, "scene%d", s + 1);
@@ -569,7 +567,7 @@ void handleWiFiServer() {
       }
     }
 
-    // Build HTML for scenes configuration
+    // Vytvorit HTML pro konfiguraci scen
     String html = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n";
     html += "<html><head><meta charset='UTF-8'><title>DMX Scenes</title></head><body>";
     html += "<button onclick=\"window.location='/'\">&larr; Back to IR Codes</button>";
@@ -594,8 +592,8 @@ void handleWiFiServer() {
     return;
   }
 
-  // --- Otherwise, IR Code Configuration page ---------------
-  // 1) Parse IR code settings from the request
+  // Stranka pro konfiguraci IR kodu
+  // 1) Zpracovani nastaveni IR kodu z prichoziho pozadavku
   for (int i = 1; i <= 6; i++) {
     String paramMethod = "channel" + String(i) + "_method=";
     int mIndex = request.indexOf(paramMethod);
@@ -671,7 +669,7 @@ void handleWiFiServer() {
     }
   }
 
-  // 2) Generate IR Code Configuration HTML (with button to /scenes)
+  // 2) Vygenerovani HTML pro konfiguraci IR kodu (s tlacitkem na /scenes)
   String html = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n";
   html += "<html><head><meta charset='UTF-8'><title>IR Code Config</title></head><body>";
   html += "<button onclick=\"window.location='/scenes'\">DMX Scenes</button>";
@@ -686,7 +684,7 @@ void handleWiFiServer() {
     html += "<input type='radio' name='channel" + String(i) + "_method' value='library' onclick='showOptions(" + String(i) + ")'> Library ";
     html += "<input type='radio' name='channel" + String(i) + "_method' value='learned' onclick='showOptions(" + String(i) + ")'> Learned <br>";
 
-    // Manual input
+    // Manualni vstup
     html += "<div id='code_manual_" + String(i) + "'>";
     html += "Manual: <input type='text' name='code" + String(i) + "_manual' value='";
     char buf[9];
@@ -694,7 +692,7 @@ void handleWiFiServer() {
     html += buf;
     html += "'></div>";
 
-    // Library inputs
+    // Vstupy z library
     html += "<div id='code_library_" + String(i) + "' style='display:none;'>";
     html += "Manufacturer: <select name='code" + String(i) + "_library_manufacturer' id='code_library_" + String(i) + "_manufacturer' onchange='updateDeviceType(" + String(i) + ")'>";
     html += "<option value='Samsung'>Samsung</option>";
@@ -711,7 +709,7 @@ void handleWiFiServer() {
     html += "Command: <select name='code" + String(i) + "_library_command' id='code_library_" + String(i) + "_command'></select>";
     html += "</div>";
 
-    // Learned select
+    // Zvolení learned
     html += "<div id='code_learned_" + String(i) + "' style='display:none;'>";
     html += "Learned: <select name='code" + String(i) + "_learned'><option value='0'>None</option>";
     for (int j = 1; j <= 6; j++) {
@@ -725,7 +723,7 @@ void handleWiFiServer() {
     html += "</div>";
   }
 
-  // Submit and scripts
+  // Odeslání a skripty
   html += "<input type='submit' value='Uložit nastavení'></form>";
   html += R"(
 <script>
