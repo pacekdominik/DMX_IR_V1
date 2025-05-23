@@ -46,7 +46,7 @@ Adafruit_SH1106 display(OLED_RESET);
 // ========================
 // DMX nastavení – využíváme UART1 (DMX_NUM_1 z esp_dmx)
 // DMX kanály 1 až 6 jsou uloženy v data[1] až data[6]
-#define ENABLE_PIN 26
+#define ENABLE_PIN 13 //nezapojený pin, pouze jako dummy
 dmx_port_t dmxPort = DMX_NUM_1;
 uint8_t data[DMX_PACKET_SIZE];
 
@@ -82,7 +82,7 @@ int menuLevel = 0;          // 0 = hlavní menu, 1 = Settings, 2 = IR Learn subm
 int menuIndexMain = 0;      // Hlavní menu: položky 0: DMX to IR, 1: IR to DMX, 2: IR Learn, 3: Settings
 int menuIndexSettings = 0;  // Settings: 0: WiFi AP, 1: Exit
 int menuIndexIRLearn = 0;   // IR Learn submenu: položky 0 až 5 (odpovídají pozicím 1 až 6), 6 = Exit
-bool wifiAPEnabled = false;
+bool wifiAPEnabled = true;
 
 // Pole pro uložené IR kódy pro DMX kanály (index 1 až 6)
 // Používá se pro manuální zadání a metodu "learned" – u metody "library" se kód dopočítá
@@ -98,6 +98,10 @@ unsigned long irLearnStartTime = 0;
 unsigned long lastButtonTime = 0;
 const unsigned long debounceDelay = 200; // 200 ms debounce
 unsigned long modeEnteredTime = 0; // Čas vstupu do režimu IR to DMX
+
+// pro IR→DMX režim
+bool  irToDmxFirstEntry = true;
+int   irToDmxLastScene  = -1;
 
 // Pro relativní indexaci – uložíme baseline hodnotu enkodéru při vstupu do menu
 long menuBaseline = 0;
@@ -277,45 +281,57 @@ void DMXtoIR() {
 }
 
 void runIrToDmx() {
-  // Zobrazíme úvodní obrazovku
-  display.clearDisplay();
-  display.setTextSize(2);
-  display.setCursor(0, 0);
-  display.println("IR to DMX");
-  display.setTextSize(1);
-  display.setCursor(0, 30);
-  display.println("Waiting for IR");
-  display.display();
+  // 1) Při každém vstupu (firstEntry=true) vykreslí hlavičku + waiting
+  if (irToDmxFirstEntry) {
+    display.clearDisplay();
+    display.setTextSize(2);
+    display.setCursor(0, 0);
+    display.println("IR to DMX");
+    display.setTextSize(1);
+    display.setCursor(0, 24);
+    display.println("Waiting for IR");
+    display.setCursor(0, 40);
+    display.print("Scene: -");
+    display.display();
 
+    irToDmxFirstEntry = false;
+  }
+
+  // 2) Detekce nového IR kódu
   if (irrecv.decode(&results)) {
-    irrecv.resume();  // připravíme přijímač na další zprávu
-
-    // Hledáme, která learned pozice odpovídá přijatému kódu
+    irrecv.resume();
     for (int i = 1; i <= 6; i++) {
       if (results.value == learnedIRCodes[i]) {
-        Serial.printf("Přijat IR kód pro pozici %d, spouštím scénu %d\n", i, i);
-
-        // Inicializujeme DMX na vysílání
-        initDMXTransciever();
-        digitalWrite(MAX485_CTRL_PIN, HIGH);
-
-        // Naplníme první 64 kanálů ze scény i
-        for (int ch = 1; ch <= 64; ch++) {
-          data[ch] = scenes[i - 1][ch - 1];
+        // jen když se změnila scéna, překreslí scénu
+        if (i != irToDmxLastScene) {
+          display.fillRect(0, 40, SCREEN_WIDTH, 8, BLACK);
+          display.setCursor(0, 40);
+          display.print("Scene: ");
+          display.println(i);
+          display.display();
+          irToDmxLastScene = i;
         }
-
-        // Odešleme DMX paket (posíláme 65 bajtů: start code + 64 kanálů)
-        dmx_write(dmxPort, data, 65);
-        dmx_send(dmxPort, 65);
-        dmx_wait_sent(dmxPort, DMX_TIMEOUT_TICK);
-
-        return;  // skončíme po nalezení a odeslání jedné scény
+        break;
       }
     }
-    // Pokud kód není v learnedIRCodes
-    Serial.println("Přijat IR kód nerozpoznán v learnedIRCodes");
+  }
+
+  // 3) Pokud máme zvolenu scénu, vysíláme DMX paket pořád dokola
+  if (irToDmxLastScene != -1) {
+    initDMXTransciever();
+    digitalWrite(MAX485_CTRL_PIN, HIGH);
+    for (int ch = 1; ch <= 64; ch++) {
+      data[ch] = scenes[irToDmxLastScene - 1][ch - 1];
+    }
+    dmx_write(dmxPort, data, 65);
+    dmx_send(dmxPort, 65);
+    dmx_wait_sent(dmxPort, DMX_TIMEOUT_TICK);
   }
 }
+
+
+
+
 
 
 //
@@ -328,77 +344,76 @@ void runIrLearn() {
   if (irLearnStartTime == 0) {
     irLearnStartTime = millis();
   }
-  
   if (millis() - irLearnStartTime >= 10000) {
-    Serial.println("IR Learn timeout.");
+    // timeout – návrat do menu
     irLearnStartTime = 0;
     activeMode = MODE_MENU;
-    menuMode = true;
-    menuLevel = 0;
-    menuIndexIRLearn = 0;
+    menuMode = true; menuLevel = 0; menuIndexIRLearn = 0;
     updateMenuBaseline();
     drawMenu();
     return;
   }
-  
+
   drawMenu();
-  
-  if (irrecv.decode(&results)) {
-    // Ověříme, zda byl kód rozpoznán (ne UNKNOWN)
-    if (results.decode_type == UNKNOWN) {
-      Serial.println("Obdržený IR kód má neznámý protokol – kód není uložen.");
-      irrecv.resume();
-      return;
-    }
-    
-    // Vypíšeme do terminálu protokol, kterým byl kód dekódován
-    String protocol;
-    switch (results.decode_type) {
-      case NEC:   protocol = "NEC";   break;
-      case SONY:  protocol = "SONY";  break;
-      case RC5:   protocol = "RC5";   break;
-      case RC6:   protocol = "RC6";   break;
-      default:    protocol = "OTHER"; break;
-    }
-    Serial.print("Obdržený kód odpovídá protokolu: ");
-    Serial.println(protocol);
-    
-    int pos = irLearnPos + 1;  // irLearnPos je 0-indexovaný; pozice = 1..6
-    learnedIRCodes[pos] = results.value;
-    Serial.print("Naučený IR kód pro pozici ");
-    Serial.print(pos);
-    Serial.print(": 0x");
-    Serial.println(results.value, HEX);
-    
-    char key[10];
-    sprintf(key, "ircode%d", pos);
-    preferences.putUInt(key, results.value);
-    
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setCursor(0, 0);
-    display.print("Learned pos ");
-    display.print(pos);
-    display.print(": 0x");
-    char buf[9];
-    sprintf(buf, "%08X", results.value);
-    display.println(buf);
-    display.display();
-    delay(2000);
-    irrecv.resume();
-    irLearnStartTime = 0;
-    
-    // Po úspěšném naučení se vracíme do hlavního menu
-    activeMode = MODE_MENU;
-    menuMode = true;
-    menuLevel = 0;
-    menuIndexIRLearn = 0;
-    resetEncoder();
-    encoder.attachHalfQuad(ENCODER_PIN_A, ENCODER_PIN_B);
-    updateMenuBaseline();
-    drawMenu();
+
+  if (!irrecv.decode(&results)) return;
+  irrecv.resume();
+
+  // ignor NEC-repeat
+  if (results.decode_type == NEC && results.value == 0xFFFFFFFFFFFFFFFFULL) return;
+  if (results.decode_type == UNKNOWN) return;
+
+  // zjistíme protokol
+  String proto;
+  switch (results.decode_type) {
+    case NEC:  proto = "NEC";  break;
+    case SONY: proto = "SONY"; break;
+    case RC5:  proto = "RC5";  break;
+    case RC6:  proto = "RC6";  break;
+    default:   proto = "OTHER";break;
   }
+
+  // uložíme kód
+  int pos = irLearnPos + 1;
+  uint32_t code = (uint32_t)results.value;
+  learnedIRCodes[pos] = code;
+  char key[12];
+  sprintf(key, "ircode%d", pos);
+  preferences.putUInt(key, code);
+
+  // vykreslíme protokol a kód na OLED
+   display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+
+  display.setCursor(0, 0);
+  display.println("IR code learned");
+  display.println("");                    // prázdný řádek
+
+  display.print("Protocol:");
+  display.setCursor(70, 16);
+  display.println(proto);
+
+  char buf[9];
+  sprintf(buf, "%08X", code);
+  display.print("Code:");
+  display.setCursor(70, 24);
+  display.println(buf);
+
+  display.display();
+  delay(2500);
+
+  // návrat do menu
+  irLearnStartTime = 0;
+  activeMode = MODE_MENU;
+  menuMode = true; menuLevel = 0; menuIndexIRLearn = 0;
+  resetEncoder();
+  encoder.attachHalfQuad(ENCODER_PIN_A, ENCODER_PIN_B);
+  updateMenuBaseline();
+  drawMenu();
 }
+
+
 
 //
 // Funkce pro návrat do menu – reset enkodéru a IR Learn index
@@ -944,22 +959,16 @@ void loop() {
           digitalWrite(MAX485_CTRL_PIN, LOW);
         } else if (menuIndexMain == 1) {
           activeMode = MODE_IR_TO_DMX;
-          menuMode = false;
+          menuMode   = false;
           Serial.println("Vybráno: IR to DMX");
           updateMenuBaseline();
           initDMXTransciever();
           digitalWrite(MAX485_CTRL_PIN, HIGH);
-          modeEnteredTime = millis();
-          while (digitalRead(ENCODER_BTN_PIN) == LOW) { delay(10); }
-          display.clearDisplay();
-          display.setTextSize(2);
-          display.setCursor(0, 0);
-          display.println("IR to DMX");
-          display.setTextSize(1);
-          display.setCursor(0, 30);
-          display.println("Čekám na IR");
-          display.display();
-        } else if (menuIndexMain == 2) {
+
+  // tady jen reset stavu, žádné display.clearDisplay() s "Čekám na IR"
+  irToDmxFirstEntry = true;
+  irToDmxLastScene  = -1;
+} else if (menuIndexMain == 2) {
           // Při výběru IR Learn z hlavního menu přejdeme do submenu a resetujeme index
           menuLevel = 2;
           menuIndexIRLearn = 0;
