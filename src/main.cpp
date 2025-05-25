@@ -11,58 +11,78 @@
 #include <Preferences.h>
 #include <driver/uart.h>  // kvůli uart_driver_delete()
 
+// Pomocná funkce pro knihovnu esp_dmx.h
 #ifndef dmx_driver_uninstall
 static inline void dmx_driver_uninstall(dmx_port_t port) {
   uart_driver_delete(port);
 }
 #endif
 
-// Pin pro ovládání MAX485 (DE/RE)
-#define MAX485_CTRL_PIN 32
 
 // ========================
-// WiFi nastavení
+// WiFi nastavení a HTTP server
 // ========================
-const char* ssid     = "DMX IR converter";
-const char* password = "999999999";
-// Vytvoření WiFi serveru na portu 80
-WiFiServer server(80);
+
+const char* ssid     = "DMX IR converter";  // Nastavení SSID přístupového bodu
+const char* password = "999999999";         // Nastavení hesla k AP
+
+WiFiServer server(80);                      // Vytvoření WiFi serveru na portu 80
 
 // ========================
 // Displej – Adafruit_SH1106
 // ========================
+
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 #define OLED_RESET   -1
 #define SCREEN_ADDRESS 0x3C
-Adafruit_SH1106 display(OLED_RESET);
+Adafruit_SH1106 display(OLED_RESET);       /// Objekt displeje
 
-// ========================
+// ========================================================
 // DMX nastavení – využíváme UART1 (DMX_NUM_1 z esp_dmx)
 // DMX kanály 1 až 6 jsou uloženy v data[1] až data[6]
-#define ENABLE_PIN 13 //nezapojený pin, pouze jako dummy
+// ========================================================
+
+#define ENABLE_PIN 13            // Nezapojený pin, pouze jako dummy
+#define MAX485_CTRL_PIN 32       // Pin pro ovládání MAX485 (DE/RE)
 dmx_port_t dmxPort = DMX_NUM_1;
 uint8_t data[DMX_PACKET_SIZE];
+static bool          dmxInstalled       = false;
+static bool          dmxToIrFirstEntry  = true;
+static uint8_t       dmxPrev[7]         = {0};      // 1..6, drží předchozí hodnotu (<255 nebo ==255)
+static unsigned long lastDmxPoll        = 0;        // čas posledního snímku
+static uint32_t      lastIrSent[7]      = {0};      // pamatuje si poslední odeslaný IR kód pro každý kanál
+uint8_t              scenes[6][64]      = { {0} };  // Uložené DMX scény: 6 scén × 64 kanálů (0–255)
 
-// ========================
-// IR přijímač – používá pin 16 (RMT)
-IRrecv irrecv(16);
+// =============
+// IR nastavení
+// =============
+
+IRrecv irrecv(16);                                       // IR přijímač na pinu 16
 decode_results results;
+IRsend irsend(17);                                       // IR vysílač na pinu 17
 
-// ========================
-// IR vysílač – využívá pin 17 (IR LED)
-IRsend irsend(17);
+uint32_t learnedIRCodes[8] = {0, 0, 0, 0, 0, 0, 0, 0};   // Naučené IR kódy 1 až 6
 
-// ========================
-// ENKODÉR – KY-040: CLK na GPIO27, DT na GPIO26, SW na GPIO25
-#define ENCODER_PIN_A 27
-#define ENCODER_PIN_B 26
-#define ENCODER_BTN_PIN 25
-ESP32Encoder encoder;
+bool  irToDmxFirstEntry = true;                          // První volání režimu IR to DMX
+int   irToDmxLastScene  = -1;                            // Poslední vybraná scéna režimu IR to DMX
 
-// ========================
+int      irLearnPos        = 0;                          // Pozice pro ukládání kódu
+unsigned long irLearnStartTime = 0;                      // Čas startu režimu učení
+ 
+// =======
+// Enkodér
+// =======
+
+#define ENCODER_PIN_A 27        // CLK pin na GPIO27
+#define ENCODER_PIN_B 26        // DT pin na GPIO26
+#define ENCODER_BTN_PIN 25      // Tlačítko pin na GPIO25
+ESP32Encoder encoder;           // Objekt enkodéru
+
+// ============================
 // Aplikační režimy a stav menu
-// ========================
+// ============================
+
 enum AppMode {
   MODE_MENU,
   MODE_DMX_TO_IR,
@@ -78,45 +98,20 @@ int menuIndexSettings = 0;  // Settings: 0: WiFi AP, 1: Exit
 int menuIndexIRLearn = 0;   // IR Learn submenu: položky 0 až 5 (odpovídají pozicím 1 až 6), 6 = Exit
 bool wifiAPEnabled = true;
 
-// Pole pro uložené IR kódy pro DMX kanály (index 1 až 6)
-// Používá se pro manuální zadání a metodu "learned" – u metody "library" se kód dopočítá
-uint32_t learnedIRCodes[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-
-// Uložené DMX scény: 6 scén × 64 kanálů (0–255)
-uint8_t scenes[6][64] = { {0} };
-
-// Globální proměnná pro pozici, do které se má uložit kód při IR Learn (nastavena z submenu)
-int irLearnPos = 0;
-
-unsigned long irLearnStartTime = 0;
 unsigned long lastButtonTime = 0;
 const unsigned long debounceDelay = 200; // 200 ms debounce
 
-// pro nový DMX→IR režim
-static bool  dmxToIrFirstEntry = true;
-static uint8_t dmxPrev[7] = {0};         // 1..6, drží předchozí hodnotu (<255 nebo ==255)
-static unsigned long lastDmxPoll = 0;    // čas posledního snímku
+long menuBaseline = 0;     // Pro relativní indexaci – uložíme baseline hodnotu enkodéru při vstupu do menu
 
-static uint32_t lastIrSent[7] = {0};     //pamatujee si poslední odeslaný IR kód pro každý kanál
+bool buttonReady = false;  // Globální proměnná pro správné vyhodnocení stisku tlačítka – akce se provedou pouze při uvolnění a opětovném stisku
 
-static bool dmxInstalled = false;
+Preferences preferences;   // Objekt Preferences pro perzistentní úložiště
 
-// pro IR→DMX režim
-bool  irToDmxFirstEntry = true;
-int   irToDmxLastScene  = -1;
 
-// Pro relativní indexaci – uložíme baseline hodnotu enkodéru při vstupu do menu
-long menuBaseline = 0;
-
-// Objekt Preferences pro perzistentní úložiště
-Preferences preferences;
-
-// Globální proměnná pro správné vyhodnocení stisku tlačítka – akce se provedou pouze při uvolnění a opětovném stisku
-bool buttonReady = false;
-
-//
+//===================================
 // Pomocná funkce pro URL dekódování
-//
+//===================================
+
 String urldecode(String input) {
   String result = "";
   char tempChar;
@@ -137,9 +132,10 @@ String urldecode(String input) {
   return result;
 }
 
-//
+//===================================
 // Pomocné funkce pro enkodér a menu
-//
+//===================================
+
 void updateMenuBaseline() {
   menuBaseline = encoder.getCount();
 }
@@ -155,9 +151,10 @@ void resetEncoder() {
   encoder.setCount(0);
 }
 
-//
-// Inicializace DMX přijímače a vysílače
-//
+//================================================
+// Inicializace DMX přijímače/vysílače
+//================================================
+
 void initDMXTransciever() {
   encoder.detach();
   if (!dmxInstalled) {
@@ -172,9 +169,10 @@ void initDMXTransciever() {
   encoder.attachHalfQuad(ENCODER_PIN_A, ENCODER_PIN_B);
 }
 
-//
+//=========================================
 // Funkce pro kreslení menu na OLED displej
-//
+//=========================================
+
 void drawMenu() {
   display.clearDisplay();
   display.setTextSize(1);
@@ -244,8 +242,9 @@ void drawMenu() {
   display.display();
 }
 
-
+//==============================
 // Režimy DMX to IR a IR to DMX 
+//==============================
 
 void runDmxToIr() {
   if (dmxToIrFirstEntry) {
@@ -301,7 +300,9 @@ void runDmxToIr() {
   }
 }
 
-
+//==================
+// Režim IR to DMX
+//==================
 
 void runIrToDmx() {
   // 1) Při každém vstupu (firstEntry=true) vykreslí hlavičku + waiting
@@ -353,23 +354,20 @@ void runIrToDmx() {
   }
 }
 
-
-
-
-
-
-//
 // Upravený IR Learn režim – při uložení kódu ověříme, zda knihovna IRremoteESP8266 rozpoznala protokol.
 // Pokud ano, do terminálu se vypíše název protokolu a kód se uloží.
 // Pokud ne, kód se odmítne.
 // Po úspěšném naučení (nebo timeoutu) se vracíme do hlavního menu.
-//
+
+//================
+// Režim IR learn
+//================
+
 void runIrLearn() {
   if (irLearnStartTime == 0) {
     irLearnStartTime = millis();
   }
-  if (millis() - irLearnStartTime >= 10000) {
-    // timeout – návrat do menu
+  if (millis() - irLearnStartTime >= 10000) {     // timeout – návrat do menu
     irLearnStartTime = 0;
     activeMode = MODE_MENU;
     menuMode = true; menuLevel = 0; menuIndexIRLearn = 0;
@@ -383,7 +381,7 @@ void runIrLearn() {
   if (!irrecv.decode(&results)) return;
   irrecv.resume();
 
-  // ignor NEC-repeat
+  // ignorování NEC-repeat kódu
   if (results.decode_type == NEC && results.value == 0xFFFFFFFFFFFFFFFFULL) return;
   if (results.decode_type == UNKNOWN) return;
 
@@ -439,9 +437,9 @@ void runIrLearn() {
 
 
 
-//
+//============================================================
 // Funkce pro návrat do menu – reset enkodéru a IR Learn index
-//
+//============================================================
 void checkReturnToMenu() {
   if (activeMode == MODE_IR_TO_DMX && (millis() < 1000)) {
     return;
@@ -462,9 +460,10 @@ void checkReturnToMenu() {
   }
 }
 
-//
+//========================================================================
 // Pomocná funkce, která podle hodnot z knihovny vrátí odpovídající IR kód
-//
+//========================================================================
+
 uint32_t getIRCodeFromLibrary(String manufacturer, String devType, String command) {
   // Samsung
   if (manufacturer == "Samsung") {
@@ -541,9 +540,10 @@ uint32_t getIRCodeFromLibrary(String manufacturer, String devType, String comman
 }
 
 
-//
+//=========================================================
 // Funkce pro obsluhu WiFi serveru s rozšířeným formulářem
-//
+//=========================================================
+
 void handleWiFiServer() {
   WiFiClient client = server.available();
   if (!client) return;
@@ -557,12 +557,12 @@ void handleWiFiServer() {
     return;
   }
 
-  // Cteni radku request
+  // Čtení řádku request
   String request = client.readStringUntil('\r');
   Serial.print("HTTP Request: ");
   Serial.println(request);
 
-  // Parsovani cesty a dotazu (query)
+  // Parsování cesty a dotazu (query)
   int firstSpace = request.indexOf(' ');
   int secondSpace = request.indexOf(' ', firstSpace + 1);
   String fullPath = request.substring(firstSpace + 1, secondSpace);
@@ -574,9 +574,9 @@ void handleWiFiServer() {
     query = fullPath.substring(qm + 1);
   }
 
-  // Pokud je "/scenes", zobraz nebo uloz DMX sceny
+  // Pokud je "/scenes", zobraz nebo ulož DMX scény
   if (path == "/scenes") {
-    // Pokud je pritomen dotaz (query), rozparsuj ho a uloz do pole scenes []
+    // Pokud je přítomen dotaz (query), rozparsuj ho a ulož do pole scenes []
     if (query.length()) {
       int idx = 0;
       while (idx < query.length()) {
@@ -598,7 +598,7 @@ void handleWiFiServer() {
         }
         idx = amp + 1;
       }
-      // Ukladani kazde sceny do NVS
+      // Ukládání každé scény do NVS
       for (int s = 0; s < 6; s++) {
         char key[12];
         sprintf(key, "scene%d", s + 1);
@@ -606,7 +606,7 @@ void handleWiFiServer() {
       }
     }
 
-    // Vytvorit HTML pro konfiguraci scen
+    // Vytvořit HTML pro konfiguraci scén
     String html = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n";
     html += "<html><head><meta charset='UTF-8'><title>DMX Scenes</title></head><body>";
     html += "<button onclick=\"window.location='/'\">&larr; Back to IR Codes</button>";
@@ -631,8 +631,8 @@ void handleWiFiServer() {
     return;
   }
 
-  // Stranka pro konfiguraci IR kodu
-  // 1) Zpracovani nastaveni IR kodu z prichoziho pozadavku
+  // Stránka pro konfiguraci IR kódů
+  // 1) Zpracovani nastaveni IR kódů z příchozího požadavku
   for (int i = 1; i <= 6; i++) {
     String paramMethod = "channel" + String(i) + "_method=";
     int mIndex = request.indexOf(paramMethod);
@@ -708,7 +708,7 @@ void handleWiFiServer() {
     }
   }
 
-  // 2) Vygenerovani HTML pro konfiguraci IR kodu (s tlacitkem na /scenes)
+  // 2) Vygenerování HTML pro konfiguraci IR kódů (s tlačítkem na /scenes)
   String html = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n";
   html += "<html><head><meta charset='UTF-8'><title>IR Code Config</title></head><body>";
   html += "<button onclick=\"window.location='/scenes'\">DMX Scenes</button>";
@@ -723,7 +723,7 @@ void handleWiFiServer() {
     html += "<input type='radio' name='channel" + String(i) + "_method' value='library' onclick='showOptions(" + String(i) + ")'> Library ";
     html += "<input type='radio' name='channel" + String(i) + "_method' value='learned' onclick='showOptions(" + String(i) + ")'> Learned <br>";
 
-    // Manualni vstup
+    // Manuální vstup
     html += "<div id='code_manual_" + String(i) + "'>";
     html += "Manual: <input type='text' name='code" + String(i) + "_manual' value='";
     char buf[9];
@@ -854,9 +854,10 @@ function showOptions(channel) {
 }
 
 
-//
+//======================================================================================
 // setup() – inicializace modulů, načtení uložených IR kódů, spuštění WiFi AP a serveru
-//
+//======================================================================================
+
 void setup() {
   Serial.begin(115200, SERIAL_8N1, 34, 1);
   delay(1000);
@@ -872,9 +873,9 @@ void setup() {
   
   display.begin(SH1106_SWITCHCAPVCC, SCREEN_ADDRESS);
   Wire.beginTransmission(SCREEN_ADDRESS);
-  Wire.write(0x00);
-  Wire.write(0x81);
-  Wire.write(0xFF);
+  Wire.write(0x00);       //
+  Wire.write(0x81);       // nastavení kontrastu displeje na maximální
+  Wire.write(0xFF);       //
   Wire.endTransmission();
   
   display.clearDisplay();
@@ -906,6 +907,8 @@ void setup() {
   drawMenu();
   
   irsend.begin();
+
+  // Načtení uložených IR kódů
   
   preferences.begin("irlearn", false);
   for (int i = 1; i <= 6; i++) {
@@ -928,9 +931,10 @@ void setup() {
   }
 }
 
-//
+//==================================================================
 // loop() – hlavní smyčka: obsluha DMX/IR režimů a webového serveru
-//
+//==================================================================
+
 void loop() {
   // Aktualizujeme stav tlačítka – pokud je tlačítko uvolněno, nastavíme flag buttonReady
   if (digitalRead(ENCODER_BTN_PIN) == HIGH) {
@@ -987,8 +991,6 @@ void loop() {
           Serial.println("Vybráno: IR to DMX");
           updateMenuBaseline();
           digitalWrite(MAX485_CTRL_PIN, HIGH);
-          
-          
           // reset stavů
           irToDmxFirstEntry = true;
           irToDmxLastScene  = -1;
